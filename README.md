@@ -2,51 +2,45 @@
 
 A standalone package for benchmarking protein structure generation models. Computes FID, fJSD, and fold scores between generated and reference protein structures.
 
-## Installation
+## Setup
 
 ```bash
+chmod +x install_dependencies.sh
 ./install_dependencies.sh
 ```
 
-## Downloads
+Required files will be automatically downloaded when you run the benchmark. Alternatively, download them manually:
 
-Before running the benchmarker, you'll need to download the required files:
-
-### GearNet Checkpoint and Proteina Features
-Download from [NVIDIA NGC - Proteina Auxiliary Files](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/clara/resources/proteina_additional_files/files):
-- `gearnet_ca.pth`: GearNet classifier weights for alpha carbon representations
-- `D_FS_eval_ca_features.pth`: Pre-computed features for D_FS dataset 
-- `pdb_eval_ca_features.pth`: Pre-computed features for PDB dataset
-
-### D_FS Index File  
-Download from [NVIDIA NGC - Proteina Training Data Indices](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/clara/resources/proteina_training_data_indices/files):
-- `d_fs_index.txt`: Indices of AlphaFold Database entries for D_FS dataset
+```bash
+python download_data.py
+```
 
 ## Usage
 
-### Use pre-computed Proteina features
+### Basic usage (recommended)
+
+Compare against Proteina's pre-computed GearNet features:
 ```bash
 python benchmark.py \
-    --generated_dir /path/to/generated/pdbs \
-    --gearnet_checkpoint /path/to/gearnet_ca.pth \
-    --use_proteina_features
+    --generated_dir path/to/generated/pdbs \
+    --reference_features proteina_features
 ```
 
-### Download D_FS dataset as reference
+### Alternative reference datasets
+
+Download and compare against Proteina's D_FS dataset:
 ```bash
 python benchmark.py \
-    --generated_dir /path/to/generated/pdbs \
-    --gearnet_checkpoint /path/to/gearnet_ca.pth \
-    --download_d_fs /path/to/d_FS_index.txt \
-    --max_structures 1000
+    --generated_dir path/to/generated/pdbs \
+    --download_indices data/d_FS_index.txt \
+    --max_structures None
 ```
 
-### Use existing D_FS dataset
+Compare against a previously downloaded Proteina D_FS dataset:
 ```bash
 python benchmark.py \
-    --generated_dir /path/to/generated/pdbs \
-    --gearnet_checkpoint /path/to/gearnet_ca.pth \
-    --d_fs_dir /path/to/d_fs_dataset
+    --generated_dir path/to/generated/pdbs \
+    --reference_dataset data/d_FS_dataset
 ```
 
 ## Arguments
@@ -55,14 +49,14 @@ python benchmark.py \
 - `--generated_dir`: Directory with generated PDB files
 - `--gearnet_checkpoint`: Path to GearNet checkpoint
 
-**Reference dataset (choose one):**
-- `--proteina_features_dir`: Path to pre-computed features directory
-- `--download_d_fs`: Path to d_FS_index.txt file to download D_FS dataset
-- `--d_fs_dir`: Path to existing D_FS dataset
+**Reference (choose one):**
+- `--reference_features`: Use pre-computed GearNet features (default: proteina_features)
+- `--download_indices`: Download and use a dataset from AFDB indices (default: data/d_FS_index.txt) 
+- `--reference_dataset`: Use an existing dataset dir (default: data/d_FS_dataset)
 
 **Optional (with defaults):**
-- `--max_structures`: Max structures to download (default: 1000)
-- `--batch_size`: Batch size (default: 12)
+- `--max_structures`: Max structures to download from indices (default: 1000, use 'None' for all 588K)
+- `--batch_size`: Batch size for feature extraction (default: 12)
 - `--num_workers`: Number of workers (default: 8)
 - `--device`: cuda/cpu (default: cuda)
 

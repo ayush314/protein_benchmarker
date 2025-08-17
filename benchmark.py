@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import sys
 import argparse
+import subprocess
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -26,6 +27,35 @@ from dataset_utils import download_d_fs_dataset, get_d_fs_files
 # ------------------------------
 # Utilities
 # ------------------------------
+
+def check_and_download_data():
+    """Check if required files exist, and download them if not."""
+    required_files = [
+        "checkpoints/gearnet_ca.pth",
+        "proteina_features/D_FS_eval_ca_features.pth", 
+        "proteina_features/pdb_eval_ca_features.pth",
+        "data/d_FS_index.txt"
+    ]
+    
+    missing_files = [f for f in required_files if not os.path.exists(f)]
+    
+    if missing_files:
+        print("Missing required files:")
+        for f in missing_files:
+            print(f"  - {f}")
+        print("\nAttempting to download required files...")
+        
+        try:
+            result = subprocess.run([sys.executable, "download_data.py"], 
+                                  check=True, cwd=os.path.dirname(os.path.abspath(__file__)))
+            print("✓ Download completed successfully!")
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Download failed: {e}")
+            print("Please run 'python download_data.py' manually or check your internet connection.")
+            sys.exit(1)
+        except FileNotFoundError:
+            print("✗ download_data.py not found. Please ensure it's in the same directory as benchmark.py")
+            sys.exit(1)
 
 def covariance(x: torch.Tensor, shrink: float = 0.0, eps: float = 1e-6) -> torch.Tensor:
     """Sample covariance of rows as samples with optional diagonal shrinkage.
@@ -281,20 +311,29 @@ def run_benchmark(args: argparse.Namespace) -> Dict[str, float]:
     extractor = FeatureExtractor(args.gearnet_checkpoint, device=args.device)
 
     providers: List[ReferenceProvider] = []
-    if args.proteina_features_dir:
-        pdir = args.proteina_features_dir
-        providers.append(PrecomputedReference("PDB", os.path.join(pdir, "pdb_eval_ca_features.pth")))
-        providers.append(PrecomputedReference("D_FS", os.path.join(pdir, "D_FS_eval_ca_features.pth")))
-    else:
-        if args.download_d_fs:
-            d_fs_files = download_d_fs_dataset(args.download_d_fs,
-                                               os.path.join(os.path.dirname(os.path.abspath(__file__)), "d_fs_dataset"),
-                                               max_structures=args.max_structures)
-        else:
-            d_fs_files = get_d_fs_files(args.d_fs_dir)
+    
+    # Determine reference method based on what's specified
+    if args.download_indices:
+        # Download dataset from indices
+        idx_path = args.download_indices
+        d_fs_files = download_d_fs_dataset(idx_path,
+                                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "data/d_FS_dataset"),
+                                           max_structures=args.max_structures)
         if not d_fs_files:
             raise RuntimeError("No reference D_FS pdbs found")
         providers.append(DatasetReference("D_FS", d_fs_files, extractor, args.batch_size, args.num_workers, shrink=args.shrink))
+    elif args.reference_dataset:
+        # Use existing dataset
+        ds_path = args.reference_dataset
+        d_fs_files = get_d_fs_files(ds_path)
+        if not d_fs_files:
+            raise RuntimeError("No reference D_FS pdbs found")
+        providers.append(DatasetReference("D_FS", d_fs_files, extractor, args.batch_size, args.num_workers, shrink=args.shrink))
+    else:
+        # Default to proteina features (even if directory doesn't exist yet - will be downloaded)
+        pdir = args.reference_features
+        providers.append(PrecomputedReference("PDB", os.path.join(pdir, "pdb_eval_ca_features.pth")))
+        providers.append(PrecomputedReference("D_FS", os.path.join(pdir, "D_FS_eval_ca_features.pth")))
 
     gen_encoded = extractor.encode(gen_files, args.batch_size, args.num_workers)
 
@@ -329,15 +368,31 @@ def build_cli() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--generated_dir", type=str, required=True, help="Directory with generated .pdb files")
-    p.add_argument("--gearnet_checkpoint", type=str, required=True, help="Path to GearNet checkpoint (gearnet_ca.pth)")
+    p.add_argument("--gearnet_checkpoint", type=str, default="checkpoints/gearnet_ca.pth", 
+                   help="Path to GearNet checkpoint (gearnet_ca.pth)")
 
     grp = p.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--proteina_features_dir", type=str, default=None,
-                     help="Directory with pre-computed Proteina features .pth files")
-    grp.add_argument("--download_d_fs", type=str, help="Path to d_FS_index.txt to download reference set")
-    grp.add_argument("--d_fs_dir", type=str, help="Existing directory with D_FS .pdb files")
+    grp.add_argument(
+        "--reference_features",
+        nargs="?",
+        const="proteina_features",
+        help="Use precomputed GearNet features (dir). Default if no value: proteina_features",
+    )
+    grp.add_argument(
+        "--download_indices",
+        nargs="?",
+        const="data/d_FS_index.txt",
+        help="Download D_FS from AFDB indices (path to index.txt). Default if no value: data/d_FS_index.txt",
+    )
+    grp.add_argument(
+        "--reference_dataset",
+        nargs="?",
+        const="data/d_FS_dataset",
+        help="Use existing dataset directory. Default if no value: data/d_FS_dataset",
+    )
 
-    p.add_argument("--max_structures", type=int, default=1000, help="Max D_FS structures to download")
+    p.add_argument("--max_structures", type=lambda x: None if x.lower() == 'none' else int(x), 
+                   default=1000, help="Max D_FS structures to download out of 588K (use 'None' for all)")
 
     p.add_argument("--batch_size", type=int, default=12)
     p.add_argument("--num_workers", type=int, default=8)
@@ -355,6 +410,9 @@ def main() -> None:
     print("=" * 60)
     print("PROTEIN STRUCTURE GENERATION BENCHMARKER")
     print("=" * 60)
+
+    # Check and download required files if missing
+    check_and_download_data()
 
     try:
         metrics = run_benchmark(args)
