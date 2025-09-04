@@ -130,7 +130,7 @@ def get_d_fs_files(d_fs_directory: str) -> List[str]:
     
     pdb_files = []
     for filename in os.listdir(d_fs_directory):
-        if filename.endswith('.pdb') and filename.startswith('AF-'):
+        if filename.endswith('.pdb'):
             pdb_files.append(os.path.join(d_fs_directory, filename))
     
     pdb_files.sort()
