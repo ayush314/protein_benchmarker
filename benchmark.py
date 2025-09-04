@@ -313,6 +313,70 @@ class MetricComputer:
 # Benchmark
 # ------------------------------
 
+def create_reference_features(dataset_path: str, output_path: str, checkpoint_path: str = "checkpoints/gearnet_ca.pth",
+                            batch_size: int = 12, num_workers: int = 8, device: str = "cuda"):
+    """
+    Create reference feature files for a dataset that can be used with --reference_features.
+
+    Args:
+        dataset_path: Path to directory containing PDB files
+        output_path: Path to save the feature file (.pth)
+        checkpoint_path: Path to GearNet checkpoint
+        batch_size: Batch size for encoding
+        num_workers: Number of workers for data loading
+        device: Device for computation
+    """
+    import os
+    from pathlib import Path
+
+    if not os.path.isdir(dataset_path):
+        raise ValueError(f"Dataset path is not a directory: {dataset_path}")
+
+    pdb_files = [os.path.join(dataset_path, f) for f in os.listdir(dataset_path) if f.endswith('.pdb')]
+    if not pdb_files:
+        raise ValueError(f"No PDB files found in: {dataset_path}")
+
+    print(f"Found {len(pdb_files)} PDB files in {dataset_path}")
+
+    # Initialize encoder
+    extractor = FeatureExtractor(checkpoint_path, device=device)
+
+    # Encode all PDB files
+    print("Encoding PDB files...")
+    encoded = extractor.encode(pdb_files, batch_size=batch_size, num_workers=num_workers)
+
+    # Compute FID statistics
+    features = encoded.features.float()
+    n_samples = features.shape[0]
+
+    # FID stats
+    fid_sum = features.sum(dim=0)
+    fid_cov_sum = (features.unsqueeze(1) * features.unsqueeze(0)).sum(dim=2)
+
+    # fJSD stats for each class
+    fjsd_stats = {}
+    for lvl, logits in [("C", encoded.logits_C), ("A", encoded.logits_A), ("T", encoded.logits_T)]:
+        probs = F.softmax(logits, dim=-1).float()
+        fjsd_stats[f"fJSD_{lvl}_real_features_sum"] = probs.sum(dim=0)
+        fjsd_stats[f"fJSD_{lvl}_real_features_num_samples"] = n_samples
+
+    # Create payload dictionary
+    payload = {
+        "FID_real_features_sum": fid_sum,
+        "FID_real_features_cov_sum": fid_cov_sum,
+        "FID_real_features_num_samples": n_samples,
+        **fjsd_stats
+    }
+
+    # Save to file
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    torch.save(payload, output_path)
+    print(f"✓ Saved reference features to {output_path}")
+    print(f"  - Dataset: {len(pdb_files)} PDB files")
+    print(f"  - Feature dimension: {features.shape[1]}")
+    print(f"  - Classes: C={encoded.logits_C.shape[1]}, A={encoded.logits_A.shape[1]}, T={encoded.logits_T.shape[1]}")
+
+
 def run_benchmark(args: argparse.Namespace) -> Dict[str, float]:
     if not os.path.isdir(args.generated_dir):
         raise FileNotFoundError(f"Generated directory not found or not a directory: {args.generated_dir}")
@@ -343,10 +407,13 @@ def run_benchmark(args: argparse.Namespace) -> Dict[str, float]:
             raise RuntimeError("No reference D_FS pdbs found")
         providers.append(DatasetReference("D_FS", d_fs_files, extractor, args.batch_size, args.num_workers, shrink=args.shrink))
     else:
-        # Default to proteina features (even if directory doesn't exist yet - will be downloaded)
+        # Default to proteina features
         pdir = args.reference_features
         providers.append(PrecomputedReference("PDB", os.path.join(pdir, "pdb_eval_ca_features.pth")))
         providers.append(PrecomputedReference("D_FS", os.path.join(pdir, "D_FS_eval_ca_features.pth")))
+        for file in os.listdir(pdir):
+            if file.endswith(".pth"):
+                providers.append(PrecomputedReference(file.replace(".pth", ""), os.path.join(pdir, file)))
 
     gen_encoded = extractor.encode(gen_files, args.batch_size, args.num_workers)
 
