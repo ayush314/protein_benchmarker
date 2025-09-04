@@ -116,8 +116,21 @@ class FeatureExtractor:
             self.model = self.model.to(self.device)
         self.model.eval()
 
+    def _patch_cpdb_to_string_mode(self):
+        import cpdb, gzip, os
+        _orig = cpdb.parse
+        def _robust_parse(fname=None, pdb_str=None, **kw):
+            if fname is not None and pdb_str is None:
+                fn = str(fname)
+                raw = gzip.open(fn, "rb").read() if fn.endswith((".pdb.gz", ".ent.gz")) else open(fn, "rb").read()
+                pdb_str = raw.decode("utf-8", errors="ignore")
+                fname = None  # force string path
+            return _orig(fname=fname, pdb_str=pdb_str, **kw)
+        cpdb.parse = _robust_parse
+
     @torch.no_grad()
     def encode(self, pdb_files: List[str], batch_size: int = 12, num_workers: int = 8) -> EncodedBatch:
+        self._patch_cpdb_to_string_mode()
         ds = PDBDataset(pdb_files)
         dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
         feats, c_logits, a_logits, t_logits = [], [], [], []
